@@ -1,0 +1,38 @@
+{
+  "_comment": "复制此文件为 openai-sub2api-config.json 并填入你的信息。不要提交实际配置文件到版本控制！",
+  
+  "outlook": {
+    "email": "<邮箱>",
+    "password": "<密码>",
+    "loginUrl": "https://outlook.live.com/mail/junkemail"
+  },
+  
+  "sub2api": {
+    "baseUrl": "<SUB2API_BASE_URL>",
+    "adminEmail": "<管理员邮箱>",
+    "adminPassword": "<密码>"
+  },
+  
+  "ddg": {
+    "settingsUrl": "https://duckduckgo.com/email/settings/autofill"
+  },
+  
+  "defaults": {
+    "platform": "OpenAI",
+    "accountType": "OAuth ChatGPT OAuth",
+    "autoForwarding": true,
+    "wsMode": "passthrough",
+    "group": "OpenAI-Free",
+    "groupId": 1,
+    "passwordPattern": "TestPass{n}!@#",
+    "personalInfo": {
+      "fullNamePattern": "<FIRST> <LAST>",
+      "birthdayAgeRange": [18, 60]
+    }
+  },
+  
+  "advanced": {
+    "maxRetries": 3,
+    "timeoutMs": 60000
+  }
+}
