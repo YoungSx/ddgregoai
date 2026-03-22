@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openai-ddg-account-registration"
+version = "5.0.0"
+description = "Register ChatGPT accounts using DuckDuckGo disposable emails and add them to sub2api"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "OpenAI DDG Account Registration"}
+]
+dependencies = [
+    "requests>=2.31.0",
+    "rich>=13.7.0",
+    "playwright>=1.40.0",
+    "portalocker>=2.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "black>=24.0.0",
+    "ruff>=0.2.0",
+]
+playwright = [
+    "playwright>=1.40.0",
+]
+
+[project.scripts]
+ddg-register = "scripts.playwright_register:main"
+ddg-callback = "scripts.callback_server:run_server"
+ddg-cleanup = "scripts.cleanup_accounts:main"
+ddg-verify = "scripts.verify_accounts:main"
+ddg-setup = "scripts.setup:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
