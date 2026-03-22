@@ -130,8 +130,7 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             # 记录回调信息
-            state_manager.state.callback_code = code
-            state_manager.state.callback_state = state
+            state_manager.set_callback(code, state)
             state_manager.set_step("oauth_callback")
             state_manager.add_log(
                 "oauth_callback", "success", f"Code: {code[:20]}..., State: {state[:20]}..."
@@ -161,14 +160,15 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
         last_error = None
         state_manager = get_state_manager()
 
+        # 配置加载移出循环
+        config = load_config()
+        client = Sub2APIClient(
+            base_url=config.sub2api.base_url,
+            admin_api_key=config.sub2api.admin_api_key,
+        )
+
         for attempt in range(max_retries + 1):
             try:
-                config = load_config()
-                client = Sub2APIClient(
-                    base_url=config.sub2api.base_url,
-                    admin_api_key=config.sub2api.admin_api_key,
-                )
-
                 state_manager.set_step("create_account")
                 state_manager.add_log("create_account", "pending", f"Attempt {attempt + 1}")
 
@@ -181,8 +181,7 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
                 )
 
                 # 成功
-                state_manager.state.account_id = result.id
-                state_manager.state.status = "completed"
+                state_manager.set_account(result.id)
                 state_manager.add_log("create_account", "success", f"Account ID: {result.id}")
                 state_manager.set_agent_notification(
                     "success", "Account created successfully", result.id
@@ -210,7 +209,7 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
                         time.sleep(delay)
 
         # 所有重试都失败
-        state_manager.state.status = "failed"
+        state_manager.set_status("failed")
         state_manager.set_error(str(last_error))
         state_manager.set_agent_notification("failed", str(last_error))
         print(f"❌ 账号创建失败: {last_error}")
@@ -601,10 +600,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OAuth 回调服务器")
     parser.add_argument("-p", "--port", type=int, default=1455, help="监听端口 (默认: 1455)")
     parser.add_argument("-f", "--foreground", action="store_true", help="前台运行（调试用）")
+    parser.add_argument("-s", "--stop", action="store_true", help="停止服务器")
 
     args = parser.parse_args()
 
-    if args.foreground:
+    if args.stop:
+        # 停止服务器
+        pid = get_pid_from_file()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                remove_pid_file()
+                print(f"服务器已停止 (PID: {pid})")
+            except ProcessLookupError:
+                remove_pid_file()
+                print("服务器进程不存在，已清理 PID 文件")
+            except Exception as e:
+                print(f"停止服务器失败: {e}")
+        else:
+            print("未找到 PID 文件，服务器可能未运行")
+    elif args.foreground:
         run_server(args.port)
     else:
         start_background(args.port)

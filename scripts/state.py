@@ -62,7 +62,7 @@ class StateManager:
 
     def __init__(self, state_file: Optional[Path] = None):
         if state_file is None:
-            state_file = Path(__file__).parent.parent / "state.json"
+            state_file = Path.cwd() / "state.json"
         self.state_file = state_file
         self.lock_file = state_file.with_suffix(".lock")
         self.lock_fd = None
