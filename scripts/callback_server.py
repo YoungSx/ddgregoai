@@ -16,7 +16,10 @@ OAuth 回调服务器
 import http.server
 import urllib.parse
 import json
+import os
+import signal
 import sys
+import time
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
@@ -27,6 +30,33 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from api import Sub2APIClient
 from config import load_config
+from state import get_state_manager
+
+
+PID_FILE = Path.home() / ".openai-callback-server.pid"
+
+
+def create_pid_file():
+    """创建 PID 文件"""
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def remove_pid_file():
+    """删除 PID 文件"""
+    if PID_FILE.exists():
+        PID_FILE.unlink()
+
+
+def get_pid_from_file() -> int | None:
+    """从 PID 文件读取进程 ID"""
+    if not PID_FILE.exists():
+        return None
+    try:
+        with open(PID_FILE, "r") as f:
+            return int(f.read().strip())
+    except (ValueError, IOError):
+        return None
 
 
 @dataclass
@@ -46,6 +76,11 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
+
+        # 处理停止请求
+        if parsed.path == "/stop":
+            self._handle_stop()
+            return
 
         # 处理创建账号请求
         if parsed.path == "/create" and params.get("session_id"):
@@ -72,12 +107,142 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
         print(f"🔐 State: {state[:50]}...")
         print("=" * 60)
 
+        # 自动创建账号
+        self._auto_create_account(code, state)
+
         html = self._generate_html(code, state)
 
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
+
+    def _auto_create_account(self, code: str, state: str):
+        """自动创建账号"""
+        state_manager = get_state_manager()
+        try:
+            session_state = state_manager.get()
+
+            # 检查 session_id
+            if not session_state.session_id:
+                state_manager.set_agent_notification("failed", "No session_id found in state file")
+                state_manager.add_log("oauth_callback", "failed", "No session_id found")
+                return
+
+            # 记录回调信息
+            state_manager.state.callback_code = code
+            state_manager.state.callback_state = state
+            state_manager.set_step("oauth_callback")
+            state_manager.add_log(
+                "oauth_callback", "success", f"Code: {code[:20]}..., State: {state[:20]}..."
+            )
+
+            # 创建账号（带重试）
+            self._create_account_with_retry(
+                session_state.session_id,
+                code,
+                state,
+                session_state.name or "User",
+            )
+
+        except ValueError as e:
+            # 状态文件损坏
+            state_manager.set_agent_notification("failed", f"State file corrupted: {e}")
+            state_manager.add_log("oauth_callback", "failed", f"State file corrupted: {e}")
+        except Exception as e:
+            # 其他未预期错误
+            state_manager.set_agent_notification("failed", f"Unexpected error: {e}")
+            state_manager.add_log("oauth_callback", "failed", f"Unexpected error: {e}")
+
+    def _create_account_with_retry(
+        self, session_id: str, code: str, state: str, name: str, max_retries: int = 1
+    ):
+        """创建账号，支持重试"""
+        last_error = None
+        state_manager = get_state_manager()
+
+        for attempt in range(max_retries + 1):
+            try:
+                config = load_config()
+                client = Sub2APIClient(
+                    base_url=config.sub2api.base_url,
+                    admin_api_key=config.sub2api.admin_api_key,
+                )
+
+                state_manager.set_step("create_account")
+                state_manager.add_log("create_account", "pending", f"Attempt {attempt + 1}")
+
+                result = client.create_account_from_oauth(
+                    session_id=session_id,
+                    code=code,
+                    state=state,
+                    name=name,
+                    group_ids=[config.defaults.group_id],
+                )
+
+                # 成功
+                state_manager.state.account_id = result.id
+                state_manager.state.status = "completed"
+                state_manager.add_log("create_account", "success", f"Account ID: {result.id}")
+                state_manager.set_agent_notification(
+                    "success", "Account created successfully", result.id
+                )
+                print(f"✅ 账号创建成功! ID={result.id}, Name={result.name}")
+                return result
+
+            except Exception as e:
+                last_error = e
+                state_manager.add_log(
+                    "create_account", "failed", f"Attempt {attempt + 1}: {str(e)}"
+                )
+
+                # 检查是否应该重试
+                if not self._should_retry(e, attempt, max_retries):
+                    break
+
+                # 延迟重试
+                if attempt < max_retries:
+                    delay = 2 if "timeout" in str(e).lower() else 0
+                    if delay > 0:
+                        state_manager.add_log(
+                            "create_account", "retrying", f"Retrying in {delay}s..."
+                        )
+                        time.sleep(delay)
+
+        # 所有重试都失败
+        state_manager.state.status = "failed"
+        state_manager.set_error(str(last_error))
+        state_manager.set_agent_notification("failed", str(last_error))
+        print(f"❌ 账号创建失败: {last_error}")
+        return None
+
+    def _should_retry(self, error, attempt: int, max_retries: int) -> bool:
+        """判断是否应该重试"""
+        if attempt >= max_retries:
+            return False
+
+        # HTTP 400 错误不重试
+        if hasattr(error, "status_code") and error.status_code == 400:
+            return False
+
+        # 其他错误可以重试
+        return True
+
+    def _handle_stop(self):
+        """处理停止请求"""
+        pid = get_pid_from_file()
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                remove_pid_file()
+                self._send_json({"success": True, "message": f"Server stopped (PID: {pid})"})
+            except ProcessLookupError:
+                remove_pid_file()
+                self._send_json({"success": False, "error": "Server process not found"})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)})
+        else:
+            self._send_json({"success": False, "error": "No PID file found"})
 
     def _handle_create(self, params):
         """处理创建账号请求"""
@@ -386,6 +551,13 @@ class ReusableTCPServer(http.server.HTTPServer):
 
 def run_server(port: int = 1455):
     """运行回调服务器"""
+    # 清理过期状态文件
+    state_manager = get_state_manager()
+    state_manager.cleanup_expired()
+
+    # 创建 PID 文件
+    create_pid_file()
+
     server = ReusableTCPServer(("localhost", port), CallbackHandler)
 
     print(f"""
@@ -393,10 +565,10 @@ def run_server(port: int = 1455):
 ║           🎯 OAuth 回调服务器                             ║
 ╠════════════════════════════════════════════════════════════╣
 ║  URL: http://localhost:{port}                            ║
-║  模式: 手动输入 session_id 创建账号                       ║
+║  模式: 自动创建账号                                       ║
 ╠════════════════════════════════════════════════════════════╣
 ║  等待 OAuth 回调...                                      ║
-║  按 Ctrl+C 停止服务器                                    ║
+║  按 Ctrl+C 或访问 /stop 停止服务器                       ║
 ╚════════════════════════════════════════════════════════════╝
 """)
 
@@ -404,6 +576,8 @@ def run_server(port: int = 1455):
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n\n服务器已停止")
+    finally:
+        remove_pid_file()
         server.shutdown()
 
 

@@ -8,6 +8,8 @@ from typing import Any
 
 import requests
 
+from state import get_state_manager
+
 
 @dataclass
 class GenerateAuthUrlResponse:
@@ -94,9 +96,19 @@ class Sub2APIClient:
         """生成 OAuth 授权链接"""
         result = self._request("POST", "/api/v1/admin/openai/generate-auth-url")
         data = result.get("data", result)
+
+        session_id = data.get("session_id") or data.get("sessionId")
+        auth_url = data.get("auth_url") or data.get("authUrl")
+
+        # 保存 session_id 到状态文件
+        state_manager = get_state_manager()
+        state_manager.set_session(session_id)
+        state_manager.set_step("generate_auth_url")
+        state_manager.add_log("generate_auth_url", "success", f"Session ID: {session_id}")
+
         return GenerateAuthUrlResponse(
-            session_id=data.get("session_id") or data.get("sessionId"),
-            auth_url=data.get("auth_url") or data.get("authUrl"),
+            session_id=session_id,
+            auth_url=auth_url,
         )
 
     def create_account_from_oauth(
